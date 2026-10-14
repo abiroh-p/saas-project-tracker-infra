@@ -167,7 +167,7 @@ resource pgAllowAzure 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2
 // Container Apps environment
 // ---------------------------------------------------------------------------------------------
 resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
-  name: 'cae-${appName}'
+  name: 'cae-${appName}-wp'
   location: location
   tags: tags
   properties: {

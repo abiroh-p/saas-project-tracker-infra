@@ -1,0 +1,395 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.48.1.52935",
+      "templateHash": "12001859237004341073"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "defaultValue": "centralindia",
+      "metadata": {
+        "description": "Azure region"
+      }
+    },
+    "appName": {
+      "type": "string",
+      "defaultValue": "ptracker",
+      "metadata": {
+        "description": "Application name"
+      }
+    },
+    "dbAdminPassword": {
+      "type": "securestring"
+    },
+    "djangoSecretKey": {
+      "type": "securestring"
+    },
+    "dbAdminUser": {
+      "type": "string",
+      "defaultValue": "ptadmin",
+      "metadata": {
+        "description": "Database administrator username"
+      }
+    },
+    "dbName": {
+      "type": "string",
+      "defaultValue": "project_tracker",
+      "metadata": {
+        "description": "Application database name"
+      }
+    },
+    "apiImageTag": {
+      "type": "string",
+      "metadata": {
+        "description": "API image tag"
+      }
+    },
+    "webImageTag": {
+      "type": "string",
+      "metadata": {
+        "description": "Frontend image tag"
+      }
+    },
+    "apiMinReplicas": {
+      "type": "int",
+      "defaultValue": 1
+    },
+    "webMinReplicas": {
+      "type": "int",
+      "defaultValue": 0
+    },
+    "maxReplicas": {
+      "type": "int",
+      "defaultValue": 2
+    }
+  },
+  "variables": {
+    "suffix": "[uniqueString(resourceGroup().id)]",
+    "acrName": "[format('{0}{1}', parameters('appName'), variables('suffix'))]",
+    "pgName": "[format('{0}-pg-{1}', parameters('appName'), variables('suffix'))]",
+    "environmentName": "[format('cae-{0}-wp', parameters('appName'))]",
+    "tags": {
+      "project": "saas-project-tracker",
+      "environment": "prod"
+    },
+    "identityBlock": {
+      "type": "UserAssigned",
+      "userAssignedIdentities": {
+        "[format('{0}', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-{0}', parameters('appName'))))]": {}
+      }
+    },
+    "apiSecrets": [
+      {
+        "name": "django-secret-key",
+        "value": "[parameters('djangoSecretKey')]"
+      },
+      {
+        "name": "db-password",
+        "value": "[parameters('dbAdminPassword')]"
+      }
+    ]
+  },
+  "resources": [
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2024-03-01",
+      "name": "api",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "identity": "[variables('identityBlock')]",
+      "properties": {
+        "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', variables('environmentName'))]",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "ingress": {
+            "external": false,
+            "targetPort": 8000,
+            "transport": "auto",
+            "allowInsecure": true
+          },
+          "registries": [
+            {
+              "server": "[reference(resourceId('Microsoft.ContainerRegistry/registries', variables('acrName')), '2023-07-01').loginServer]",
+              "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-{0}', parameters('appName')))]"
+            }
+          ],
+          "secrets": "[variables('apiSecrets')]"
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "api",
+              "image": "[format('{0}/api:{1}', reference(resourceId('Microsoft.ContainerRegistry/registries', variables('acrName')), '2023-07-01').loginServer, parameters('apiImageTag'))]",
+              "resources": {
+                "cpu": "[json('0.5')]",
+                "memory": "1Gi"
+              },
+              "env": [
+                {
+                  "name": "DJANGO_SECRET_KEY",
+                  "secretRef": "django-secret-key"
+                },
+                {
+                  "name": "DB_PASSWORD",
+                  "secretRef": "db-password"
+                },
+                {
+                  "name": "DB_HOST",
+                  "value": "[reference(resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('pgName')), '2024-08-01').fullyQualifiedDomainName]"
+                },
+                {
+                  "name": "DB_NAME",
+                  "value": "[parameters('dbName')]"
+                },
+                {
+                  "name": "DB_USER",
+                  "value": "[parameters('dbAdminUser')]"
+                },
+                {
+                  "name": "DB_SSLMODE",
+                  "value": "require"
+                },
+                {
+                  "name": "DJANGO_ALLOWED_HOSTS",
+                  "value": "api,.azurecontainerapps.io"
+                },
+                {
+                  "name": "DJANGO_CSRF_TRUSTED_ORIGINS",
+                  "value": "[format('https://{0}', format('web.{0}', reference(resourceId('Microsoft.App/managedEnvironments', variables('environmentName')), '2026-03-02-preview').defaultDomain))]"
+                },
+                {
+                  "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+                  "value": "[reference(resourceId('Microsoft.Insights/components', format('appi-{0}', parameters('appName'))), '2020-02-02').ConnectionString]"
+                }
+              ],
+              "probes": [
+                {
+                  "type": "Liveness",
+                  "httpGet": {
+                    "path": "/api/healthz",
+                    "port": 8000
+                  },
+                  "initialDelaySeconds": 10,
+                  "periodSeconds": 15,
+                  "failureThreshold": 3
+                },
+                {
+                  "type": "Readiness",
+                  "httpGet": {
+                    "path": "/api/readyz",
+                    "port": 8000
+                  },
+                  "initialDelaySeconds": 5,
+                  "periodSeconds": 10,
+                  "failureThreshold": 3
+                }
+              ]
+            }
+          ],
+          "scale": {
+            "minReplicas": "[parameters('apiMinReplicas')]",
+            "maxReplicas": "[parameters('maxReplicas')]",
+            "rules": [
+              {
+                "name": "http-concurrency",
+                "http": {
+                  "metadata": {
+                    "concurrentRequests": "50"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2024-03-01",
+      "name": "web",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "identity": "[variables('identityBlock')]",
+      "properties": {
+        "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', variables('environmentName'))]",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "ingress": {
+            "external": true,
+            "targetPort": 8080,
+            "transport": "auto",
+            "allowInsecure": false
+          },
+          "registries": [
+            {
+              "server": "[reference(resourceId('Microsoft.ContainerRegistry/registries', variables('acrName')), '2023-07-01').loginServer]",
+              "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-{0}', parameters('appName')))]"
+            }
+          ]
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "web",
+              "image": "[format('{0}/web:{1}', reference(resourceId('Microsoft.ContainerRegistry/registries', variables('acrName')), '2023-07-01').loginServer, parameters('webImageTag'))]",
+              "resources": {
+                "cpu": "[json('0.25')]",
+                "memory": "0.5Gi"
+              },
+              "env": [
+                {
+                  "name": "API_UPSTREAM",
+                  "value": "http://api"
+                }
+              ],
+              "probes": [
+                {
+                  "type": "Liveness",
+                  "httpGet": {
+                    "path": "/healthz",
+                    "port": 8080
+                  },
+                  "initialDelaySeconds": 5,
+                  "periodSeconds": 15
+                },
+                {
+                  "type": "Readiness",
+                  "httpGet": {
+                    "path": "/healthz",
+                    "port": 8080
+                  },
+                  "initialDelaySeconds": 3,
+                  "periodSeconds": 10
+                }
+              ]
+            }
+          ],
+          "scale": {
+            "minReplicas": "[parameters('webMinReplicas')]",
+            "maxReplicas": "[parameters('maxReplicas')]",
+            "rules": [
+              {
+                "name": "http-concurrency",
+                "http": {
+                  "metadata": {
+                    "concurrentRequests": "100"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.App/containerApps', 'api')]"
+      ]
+    },
+    {
+      "type": "Microsoft.App/jobs",
+      "apiVersion": "2024-03-01",
+      "name": "migrate",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "identity": "[variables('identityBlock')]",
+      "properties": {
+        "environmentId": "[resourceId('Microsoft.App/managedEnvironments', variables('environmentName'))]",
+        "configuration": {
+          "triggerType": "Manual",
+          "replicaTimeout": 600,
+          "replicaRetryLimit": 0,
+          "manualTriggerConfig": {
+            "parallelism": 1,
+            "replicaCompletionCount": 1
+          },
+          "registries": [
+            {
+              "server": "[reference(resourceId('Microsoft.ContainerRegistry/registries', variables('acrName')), '2023-07-01').loginServer]",
+              "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-{0}', parameters('appName')))]"
+            }
+          ],
+          "secrets": "[variables('apiSecrets')]"
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "migrate",
+              "image": "[format('{0}/api:{1}', reference(resourceId('Microsoft.ContainerRegistry/registries', variables('acrName')), '2023-07-01').loginServer, parameters('apiImageTag'))]",
+              "command": [
+                "sh",
+                "-c"
+              ],
+              "args": [
+                "python manage.py migrate --noinput && python manage.py createcachetable"
+              ],
+              "resources": {
+                "cpu": "[json('0.5')]",
+                "memory": "1Gi"
+              },
+              "env": [
+                {
+                  "name": "DJANGO_SECRET_KEY",
+                  "secretRef": "django-secret-key"
+                },
+                {
+                  "name": "DB_PASSWORD",
+                  "secretRef": "db-password"
+                },
+                {
+                  "name": "DB_HOST",
+                  "value": "[reference(resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('pgName')), '2024-08-01').fullyQualifiedDomainName]"
+                },
+                {
+                  "name": "DB_NAME",
+                  "value": "[parameters('dbName')]"
+                },
+                {
+                  "name": "DB_USER",
+                  "value": "[parameters('dbAdminUser')]"
+                },
+                {
+                  "name": "DB_SSLMODE",
+                  "value": "require"
+                },
+                {
+                  "name": "DJANGO_ALLOWED_HOSTS",
+                  "value": "api,.azurecontainerapps.io"
+                },
+                {
+                  "name": "DJANGO_CSRF_TRUSTED_ORIGINS",
+                  "value": "[format('https://{0}', format('web.{0}', reference(resourceId('Microsoft.App/managedEnvironments', variables('environmentName')), '2026-03-02-preview').defaultDomain))]"
+                },
+                {
+                  "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+                  "value": "[reference(resourceId('Microsoft.Insights/components', format('appi-{0}', parameters('appName'))), '2020-02-02').ConnectionString]"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "webUrl": {
+      "type": "string",
+      "value": "[format('https://{0}', reference(resourceId('Microsoft.App/containerApps', 'web'), '2024-03-01').configuration.ingress.fqdn)]"
+    },
+    "apiImage": {
+      "type": "string",
+      "value": "[format('{0}/api:{1}', reference(resourceId('Microsoft.ContainerRegistry/registries', variables('acrName')), '2023-07-01').loginServer, parameters('apiImageTag'))]"
+    },
+    "webImage": {
+      "type": "string",
+      "value": "[format('{0}/web:{1}', reference(resourceId('Microsoft.ContainerRegistry/registries', variables('acrName')), '2023-07-01').loginServer, parameters('webImageTag'))]"
+    },
+    "environmentName": {
+      "type": "string",
+      "value": "[variables('environmentName')]"
+    }
+  }
+}
