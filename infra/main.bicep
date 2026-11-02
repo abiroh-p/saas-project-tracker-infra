@@ -56,7 +56,7 @@ param logDailyCapGb int = 1
 
 var suffix = uniqueString(resourceGroup().id)
 var acrName = '${appName}${suffix}'
-var pgName = '${appName}-pg-${suffix}'
+var pgName = '${appName}-pgt-${suffix}'
 var acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 
 // ---------------------------------------------------------------------------------------------
@@ -121,7 +121,7 @@ resource pg 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
   location: location
   tags: tags
   sku: {
-    name: 'Standard_B1ms'
+    name: 'Standard_B2s'
     tier: 'Burstable'
   }
   properties: {
@@ -166,11 +166,15 @@ resource pgAllowAzure 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2
 // ---------------------------------------------------------------------------------------------
 // Container Apps environment
 // ---------------------------------------------------------------------------------------------
-resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
+resource env 'Microsoft.App/managedEnvironments@2026-03-02-preview' = {
   name: 'cae-${appName}-wp'
   location: location
   tags: tags
   properties: {
+    environmentMode: 'WorkloadProfiles'
+    workloadProfiles: [
+      { name: 'Consumption', workloadProfileType: 'Consumption' }
+    ]
     appLogsConfiguration: {
       destination: 'log-analytics'
       logAnalyticsConfiguration: {
